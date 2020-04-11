@@ -17,6 +17,7 @@ how to use the page table and disk interfaces.
 
 int npages, nframes, policy_index = 0;
 int* frame_table;
+int* lru_table;
 const char *program, *algorithm;
 char *physmem;
 struct disk *disk;
@@ -24,13 +25,38 @@ struct disk *disk;
 int pageFaults, diskReads, diskWrites;
 
 
+
+int match_counter;
+int* page_history;
+int page_history_count = 0;
+int cycle_thresh = 2;
+int detected_cycles;
+int rand_switch = 0;
+
+
+
+//Helper Functions
 void init_frame_table() {
 	int i;
 	for(i = 0; i < nframes; i++) {
 		frame_table[i] = -1;
-
 	}
 }
+
+void init_lru_table() {
+	int i;
+	for (i = 0; i < nframes; i++) {
+		lru_table[i] = 0;
+	}
+}
+
+void init_page_history(){
+	int i;
+	for (i = 0; i < npages; i++){
+		page_history[i] = -1;
+	}
+}
+
 int frame_table_full() {		//Function returns the first open location in the page table. If none are found, -1 is returned
 	int i;
 	for (i = 0; i < nframes; i++) {
@@ -39,6 +65,7 @@ int frame_table_full() {		//Function returns the first open location in the page
 
 	return -1;
 }
+
 void replace_page(struct page_table *pt, int page) {
 	
 	int frame, bits;
@@ -49,17 +76,15 @@ void replace_page(struct page_table *pt, int page) {
 			disk_write(disk, frame_table[policy_index], &physmem[frame*PAGE_SIZE]);
 			page_table_set_entry(pt, frame_table[policy_index], frame, 0);
 			diskWrites++;
-			printf("Page %d was in frame %d with PROT_READ and PROT_WRITE. It has been written back to disk.\n", frame_table[policy_index], frame);
 		}
 		else { //Page to be replaced only has read permissions, thus does not need to be written back
 			page_table_set_entry(pt, frame_table[policy_index], frame, 0);
-			printf("Page %d was in frame %d with PROT_READ. No writeback occured.\n", frame_table[policy_index], frame);
 		}
 
 		disk_read(disk, page, &physmem[frame*PAGE_SIZE]);
 		page_table_set_entry(pt, page, frame, PROT_READ);
 		diskReads++;
-		printf("Page %d is now in frame %d with PROT_READ.\n", page, frame);
+		lru_table[policy_index] = 1;
 
 		frame_table[policy_index] = page;
 
@@ -68,6 +93,7 @@ void replace_page(struct page_table *pt, int page) {
 }
 
 
+//Replacement Policies
 void fifo_policy(struct page_table *pt, int page){
 	replace_page(pt, page);
 	policy_index++;
@@ -79,24 +105,73 @@ void random_policy(struct page_table *pt, int page) {
 	replace_page(pt, page);
 }
 
+void custom_policy(struct page_table *pt, int page) {
+	//Policy implements LRU with a clock style structure, switching to random if a cycle_threshold is exceeded in the page history
+	if (rand_switch == 0) {
+
+		if (page_history_count >= npages) {
+
+			if (page == page_history[0]) {
+				//Current page occured 1 cycle ago
+				match_counter++;
+			} else {
+				//Pattern broken
+				match_counter = 0;
+				detected_cycles = 0;
+			}
+
+			if (match_counter == npages) {
+				//All pages of the cycle match
+				match_counter = 0;
+				detected_cycles++;
+			}
+
+			if (detected_cycles == cycle_thresh) {
+				rand_switch = 1;
+			}
+
+			//Shift the page history left
+			int j;
+			for (j = 0; j < npages - 1; j++) {
+				page_history[j] = page_history[j + 1];
+			}
+			page_history[npages-1] = page;
+		}else{
+			//Finish populating page history
+			page_history[page_history_count] = page;
+			page_history_count++;
+
+		}
+
+
+		while (lru_table[policy_index] != 0) {
+			lru_table[policy_index] = 0;
+			policy_index++;
+			policy_index %= nframes;
+		}
+
+		replace_page(pt, page);
+
+		policy_index += 2;
+		policy_index %= nframes;
+
+	} else {
+		random_policy(pt, page);
+	}
+}
+
 
 void page_fault_handler(struct page_table *pt, int page){
 	
 	pageFaults++;
 	
-	printf("Page fault on page %d.\n", page);
-
 	int frame, bits;
 
 	page_table_get_entry(pt, page, &frame, &bits);
 
 	if (bits == 0) { //Has neither read or write. Must employ policy
 
-		printf("Page %d has neither PROT_READ or PROT_WRITE.\n", page);
-
 		if ((frame = frame_table_full()) < 0) { //If table is full
-
-			printf("Frame table had no open frames. Employing selected replacement policy.\n");
 
 			if (!strcmp(algorithm, "rand")) {				//random replacement
 				random_policy(pt, page);
@@ -105,25 +180,25 @@ void page_fault_handler(struct page_table *pt, int page){
 			else if (!strcmp(algorithm, "fifo")) { 			//first in first out replacement
 				fifo_policy(pt, page);
 			}
-			//custom algorithm
 			else if (!strcmp(algorithm, "custom")) {
-				//CUSTOM ALGORITHM FUNCTION GOES HERE
+				custom_policy(pt, page);
 			}
 		
 		} else {
 			
+			disk_read(disk, page, &physmem[frame*PAGE_SIZE]);
+			diskReads++;
 			page_table_set_entry(pt, page, frame, PROT_READ);
 			frame_table[frame] = page;
-
-			printf("Frame table had an open frame. Page %d is at frame %d with PROT_READ.\n", page, frame);
+			lru_table[frame] = 1;
+			page_history[page_history_count] = page;
+			page_history_count++;
 
 		}
 
 	}else{ //Has read permission. Add write permission
 		
 		page_table_set_entry(pt, page, frame, (PROT_READ|PROT_WRITE));
-		printf("Page %d in frame %d was given PROT_WRITE.\n", page, frame);
-		
 	}
 
 
@@ -142,8 +217,26 @@ int main(int argc, char *argv[])
 	algorithm = argv[3];
 	program = argv[4];
 
+	//make sure user enters right algorithm
+	if(!(!strcmp(algorithm, "rand")||!strcmp(algorithm, "fifo")||!strcmp(algorithm, "custom"))) {
+		fprintf(stderr, "unknown algorithm: %s. Must be fifo, rand or custom\n", algorithm);
+		return 1;
+	}
+
+	//make sure user enters right program
+	if(!(!strcmp(program, "alpha")||!strcmp(program, "beta")||!strcmp(program, "delta")||!strcmp(program,"gamma"))) {
+		fprintf(stderr, "unknown program: %s. Must be alpha, beta, delta or gamma\n", program);
+		return 1;
+	}
+
+
+
+
 	frame_table = malloc(sizeof(int)*npages);
 	init_frame_table();
+	lru_table = malloc(sizeof(int)*npages);
+	init_lru_table();
+	page_history = malloc(sizeof(int)*npages);
 
 
 
@@ -195,6 +288,8 @@ int main(int argc, char *argv[])
 	page_table_delete(pt);
 	disk_close(disk);
 	free(frame_table);
+	free(lru_table);
 
+	free(page_history);
 	return 0;
 }
