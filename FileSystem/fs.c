@@ -96,13 +96,34 @@ void updateBitmap() {
 }
 
 
+void invalidateInodes(int inodeBlocks){
+//Invalidate all inodes in the inode blocks
+	union fs_block block;
+
+	int i,j;
+	for(i=1; i<=inodeBlocks; i++){
+		disk_read(i,block.data);
+		for(j=0;j<INODES_PER_BLOCK;j++){
+			block.inode[j].isvalid = 0;
+		}
+		disk_write(i,block.data);
+	}
+}
+
 int fs_format()
 {
-	//Invalidated inodes, reset inode bitmap, rewrite superblock
 	if (fs_mounted) return 0;
-	updateBitmap();
-	printf("Bitmap has been updated\n");
+	
+	union fs_block datablock;
+	datablock.super.magic = FS_MAGIC;
+	datablock.super.nblocks = disk_size();
+	datablock.super.ninodeblocks = calcInodeBlocks();
+	datablock.super.ninodes = 0;
 
+	invalidateInodes(calcInodeBlocks());
+
+	disk_write(0, datablock.data);
+	printf("local success\n");
 	return 1;
 }
 
