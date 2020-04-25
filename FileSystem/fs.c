@@ -110,23 +110,6 @@ void invalidateInodes(int inodeBlocks){
 	}
 }
 
-int fs_format()
-{
-	if (fs_mounted) return 0;
-	
-	union fs_block datablock;
-	datablock.super.magic = FS_MAGIC;
-	datablock.super.nblocks = disk_size();
-	datablock.super.ninodeblocks = calcInodeBlocks();
-	datablock.super.ninodes = 0;
-
-	invalidateInodes(calcInodeBlocks());
-
-	disk_write(0, datablock.data);
-	printf("local success\n");
-	return 1;
-}
-
 void dispInode(struct fs_inode *myInode, int inodeBlock, int offset) {
 
 	int i, dcount=0;
@@ -186,69 +169,37 @@ void fs_debug()
 
 }
 
+int fs_format()
+{
+	if (fs_mounted) return 0;
+	
+	union fs_block datablock;
+	datablock.super.magic = FS_MAGIC;
+	datablock.super.nblocks = disk_size();
+	datablock.super.ninodeblocks = calcInodeBlocks();
+	datablock.super.ninodes = 0;
+
+	invalidateInodes(calcInodeBlocks());
+
+	disk_write(0, datablock.data);
+	printf("local success\n");
+	return 1;
+}
+
+
 int fs_mount()
 {
-	/*
-	int i;
-	int inodeForLoop;
-	int dBlocks;
-	int iBlocks;
-	int successful = 0;
-	*/
+
 
 	union fs_block block;
 	disk_read(0,block.data);
+	if(block.super.magic != FS_MAGIC) return 0;
 	
 	//allocate space for bitmap
 	free_bitmap = calloc(block.super.nblocks,sizeof(int));
 	if(!free_bitmap) return 0;
 
 	updateBitmap();
-	
-	/*
-	union fs_block inodeBlock;
-	struct fs_inode inode;
-	
-	//parse FS
-	for(i=1; i<block.super.ninodeblocks; i++){
-
-		//disk read
-		disk_read(i,inodeBlock.data);
-
-		for(inodeForLoop=0;inodeForLoop<INODES_PER_BLOCK;inodeForLoop++) {
-
-			inode = inodeBlock.inode[inodeForLoop];
-
-			//make sure the inode is valid
-			if(inode.isvalid) {
-				free_bitmap[i] = 1;
-				
-				for(dBlocks=0; dBlocks*DISK_BLOCK_SIZE<inode.size && dBlocks < POINTERS_PER_BLOCK; dBlocks++) {
-					free_bitmap[inode.direct[dBlocks]] = 1;
-				}
-
-				if(inode.size > POINTERS_PER_BLOCK*DISK_BLOCK_SIZE) {
-		
-					free_bitmap[inode.indirect] = 1;
-
-					union fs_block blockTemp;
-					disk_read(inode.indirect,blockTemp.data);
-
-					for(iBlocks=0; iBlocks<(double)inode.size/DISK_BLOCK_SIZE - POINTERS_PER_BLOCK; iBlocks++) {
-						free_bitmap[blockTemp.pointers[iBlocks]] = 1;
-						successful = 1;
-					}
-				}
-			}
-		}
-	}
-	
-	//not really sure about this guys, it says return 1 on success and 0 on failure
-	//but not sure when to return if it's successful
-	//
-	
-	return successful;
-	*/
 	return 1;
 }
 
