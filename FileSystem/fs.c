@@ -15,7 +15,7 @@
 
 int fs_mounted = 0;
 int *free_bitmap;
-
+int in_blocks;
 
 struct fs_superblock {
 	int magic;
@@ -46,8 +46,6 @@ int calcInodeBlocks(){
 
 void updateBitmap() {
 	
-	int inode_blocks = calcInodeBlocks();
-
 	union fs_block block;
 	union fs_block ind_block;
 
@@ -58,43 +56,44 @@ void updateBitmap() {
 		disk_read(i, block.data);
 
 		if (!i) {//superblock
-
 			free_bitmap[0] = (block.super.magic == FS_MAGIC) ? 1 : 0;
 		}
-		else if (i <= inode_blocks) {//inode blocks
+		else if (i <= in_blocks) {//inode blocks
 
 			//Check each inode
+			int foundValid = 0;
 			for (j = 0; j < INODES_PER_BLOCK; j++) {
 
 				if (block.inode[j].isvalid) {
 
 					//The entire block is valid
 					free_bitmap[i] = 1;
-
+					foundValid = 1;
 					//Check the address of the direct poointers
 					for (k = 0; k < POINTERS_PER_INODE; k++) {
-						free_bitmap[block.inode[j].direct[k]] = (block.inode[j].direct[k]) ? 1 : 0;
-					}
 
+						if(block.inode[j].direct[k]) free_bitmap[block.inode[j].direct[k]] = 1;
+						//free_bitmap[block.inode[j].direct[k]] = (block.inode[j].direct[k]) ? 1 : 0;
+					}
+					
 					//Check the indirect pointer
 					if (block.inode[j].indirect) {
 						//Follow the pointer to the indirect block and search it
 						disk_read(block.inode[j].indirect, ind_block.data);
 						for (m = 0; m < POINTERS_PER_BLOCK; m++) {
-							free_bitmap[ind_block.pointers[m]] = (ind_block.pointers[m]) ? 1 : 0;
+							if(ind_block.pointers[m]) free_bitmap[ind_block.pointers[m]] = 1;
+							//free_bitmap[ind_block.pointers[m]] = (ind_block.pointers[m]) ? 1 : 0;
 						}
 					}
-				}
-				else {
-					free_bitmap[i] = 0;
+
 				}
 			}
+
+			if(!foundValid) free_bitmap[i] = 0;
 		}
 	}
 
-
 }
-
 
 void invalidateInodes(int inodeBlocks){
 //Invalidate all inodes in the inode blocks
@@ -147,8 +146,6 @@ void dispInode(struct fs_inode *myInode, int inodeBlock, int offset) {
 void fs_debug()
 {
 
-	int inode_blocks = calcInodeBlocks();
-
 	union fs_block block;
 
 	disk_read(0,block.data);
@@ -159,7 +156,7 @@ void fs_debug()
 	printf("    %d inodes\n",block.super.ninodes);
 
 	int i, j;
-	for (i = 1; i <= inode_blocks; i++) {
+	for (i = 1; i <= block.super.ninodeblocks; i++) {
 		disk_read(i, block.data);
 		for (j = 0; j < INODES_PER_BLOCK; j++) {
 			if (block.inode[j].isvalid) dispInode(&(block.inode[j]), i, j);
@@ -177,20 +174,18 @@ int fs_format()
 	datablock.super.magic = FS_MAGIC;
 	datablock.super.nblocks = disk_size();
 	datablock.super.ninodeblocks = calcInodeBlocks();
-	datablock.super.ninodes = 0;
+	datablock.super.ninodes = calcInodeBlocks*INODES_PER_BLOCK;
 
 	invalidateInodes(calcInodeBlocks());
 
 	disk_write(0, datablock.data);
-	printf("local success\n");
 	return 1;
 }
 
 
 int fs_mount()
 {
-
-
+	
 	union fs_block block;
 	disk_read(0,block.data);
 	if(block.super.magic != FS_MAGIC) return 0;
@@ -198,6 +193,7 @@ int fs_mount()
 	//allocate space for bitmap
 	free_bitmap = calloc(block.super.nblocks,sizeof(int));
 	if(!free_bitmap) return 0;
+	in_blocks = block.super.ninodeblocks;
 
 	updateBitmap();
 	return 1;
@@ -260,10 +256,11 @@ int fs_create()
 
 int fs_delete( int inumber )
 {
-	//Reject impossible inodes
-	int inode_blocks = calcInodeBlocks();
-	if(inumber > inode_blocks*INODES_PER_BLOCK - 1 || inumber < 0) return 0;
 
+	//Reject impossible inodes
+	if(inumber > in_blocks*INODES_PER_BLOCK - 1 || inumber < 0) return 0;
+
+	//union fs_block* block = (union fs_block*) malloc(sizeof(union fs_block));
 	union fs_block block;
 
 	//Translate inumber to iblock
@@ -273,13 +270,13 @@ int fs_delete( int inumber )
 	int localInodeIndex = inumber%INODES_PER_BLOCK;
 	
 	//Check to see if iblock is valid
-	if(!free_bitmap[iblock]) return 1;
+	if(!free_bitmap[iblock]) return 0;
 
 	//Read in the iblock
 	disk_read(iblock, block.data);
 
 	//Check to see if inumber is valid
-	if(!block.inode[localInodeIndex].isvalid) return 1;
+	if(!block.inode[localInodeIndex].isvalid) return 0;
 
 	//Iterate through direct pointers and free blocks referenced by valid pointers
 	int i;
@@ -319,6 +316,8 @@ int fs_delete( int inumber )
 
 	//Invalidate inode block if its emptry
 	if(!foundValidInode) free_bitmap[iblock] = 0;
+
+	disk_write(iblock, block.data);
 
 	return 1;
 }
