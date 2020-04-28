@@ -174,7 +174,7 @@ int fs_format()
 	datablock.super.magic = FS_MAGIC;
 	datablock.super.nblocks = disk_size();
 	datablock.super.ninodeblocks = calcInodeBlocks();
-	datablock.super.ninodes = calcInodeBlocks()*INODES_PER_BLOCK;
+	datablock.super.ninodes = calcInodeBlocks*INODES_PER_BLOCK;
 
 	invalidateInodes(calcInodeBlocks());
 
@@ -194,7 +194,7 @@ int fs_mount()
 	free_bitmap = calloc(block.super.nblocks,sizeof(int));
 	if(!free_bitmap) return 0;
 	in_blocks = block.super.ninodeblocks;
-
+	fs_mounted = 1;
 	updateBitmap();
 	return 1;
 }
@@ -258,9 +258,16 @@ int fs_create()
 
 int fs_delete( int inumber )
 {
+	if(!fs_mounted){
+		printf("There is no mounted disk\n");
+        return 0;
+	}
 
 	//Reject impossible inodes
-	if(inumber > in_blocks*INODES_PER_BLOCK - 1 || inumber < 0) return 0;
+	if(inumber > in_blocks*INODES_PER_BLOCK - 1 || inumber < 1){
+		printf("Requested inode number is either too high or too low\n");
+        return 0;
+	}
 
 	//union fs_block* block = (union fs_block*) malloc(sizeof(union fs_block));
 	union fs_block block;
@@ -272,14 +279,18 @@ int fs_delete( int inumber )
 	int localInodeIndex = inumber%INODES_PER_BLOCK;
 	
 	//Check to see if iblock is valid
-	if(!free_bitmap[iblock]) return 0;
-
+	if(!free_bitmap[iblock]){
+		printf("Invalid allocation for block containing requested inode\n");
+		return 0;
+	}
 	//Read in the iblock
 	disk_read(iblock, block.data);
 
 	//Check to see if inumber is valid
-	if(!block.inode[localInodeIndex].isvalid) return 0;
-
+	if(!block.inode[localInodeIndex].isvalid){
+		printf("Requested inode is not valid\n");
+		return 0;
+	}
 	//Iterate through direct pointers and free blocks referenced by valid pointers
 	int i;
 	for(i=0;i<POINTERS_PER_INODE;i++){
