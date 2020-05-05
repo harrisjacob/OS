@@ -174,7 +174,7 @@ int fs_format()
 	datablock.super.magic = FS_MAGIC;
 	datablock.super.nblocks = disk_size();
 	datablock.super.ninodeblocks = calcInodeBlocks();
-	datablock.super.ninodes = calcInodeBlocks*INODES_PER_BLOCK;
+	datablock.super.ninodes = calcInodeBlocks()*INODES_PER_BLOCK;
 
 	invalidateInodes(calcInodeBlocks());
 
@@ -364,7 +364,6 @@ int fs_getsize( int inumber )
 	return -1;
 }
 
-
 int fs_read( int inumber, char *data, int length, int offset )
 {
 
@@ -378,7 +377,6 @@ int fs_read( int inumber, char *data, int length, int offset )
 	}
 
 	int i, j, dblock, bytes_read=0;
-	//union fs_block* block = (union fs_block*) malloc(sizeof(union fs_block));
 	union fs_block block, indirect_block;
 	struct fs_inode inode;
 	char loop_data[4096]="";
@@ -436,6 +434,18 @@ int fs_read( int inumber, char *data, int length, int offset )
 	return bytes_read;
 }
 
+
+int newBlock(int blocks){
+	int i;
+	for(i=0; i<blocks; i++){
+		if(!free_bitmap[i]){
+			free_bitmap[i] = 1;
+			return i;
+		}
+	}
+	return 0;
+}
+
 int fs_write( int inumber, const char *data, int length, int offset )
 {	
 
@@ -447,20 +457,17 @@ int fs_write( int inumber, const char *data, int length, int offset )
     printf("Error: enter a valid inode value\n");   
     return 0;
   }
-	//union fs_block* block = (union fs_block*) malloc(sizeof(union fs_block));	
-	union fs_block block, indirect_block;
-	struct fs_inode inode;
-  int i, j, dblock, bytes_written=0;
-	//char loop_data[4096]="";
+	union fs_block block, indirect_block, super_block;
+  int i, j, new_block, bytes_written=0;
 	char total_data[16384]="";
 	strcpy(total_data, data);
 
-  //int tot_bytes = length-offset;
+  disk_read(0,super_block.data);
+
   //local inode number
   int i_offset = inumber % INODES_PER_BLOCK;
   int block_num = inumber/INODES_PER_BLOCK + 1;
 	int pointer_offset = offset/4096;
-	//printf("%d\t%d\n", i_offset, block_num);
 
   //go to the inode's block
   disk_read(block_num, block.data);
@@ -468,46 +475,88 @@ int fs_write( int inumber, const char *data, int length, int offset )
 	int isize = (POINTERS_PER_INODE+POINTERS_PER_BLOCK)*4096;
 	int bytes_left = ((isize-offset) < length) ? isize-offset : length;
 
-	//printf("%d\t%d\n", offset, isize);
-	inode = block.inode[i_offset];
+  if(!block.inode[i_offset].isvalid) return 0;
 
-  if(!inode.isvalid) return 0;
+	//at the start, when offset is 0, reset direct and indirect pointers to 0
+	if(offset==0){ 
+		int x;
+		for(x=0;x<POINTERS_PER_INODE;x++){
+    	if(block.inode[i_offset].direct[x]<=0) continue;
+    	free_bitmap[block.inode[i_offset].direct[x]] = 0;
+			block.inode[i_offset].direct[x]=0;
+  	}
+	
+		if(block.inode[i_offset].indirect>0){
+			union fs_block ind_block;	
+    	disk_read(block.inode[i_offset].indirect, ind_block.data);
+
+    	//Iterate through pointers of indirect block
+			int y;
+    	for(y=0;y<POINTERS_PER_BLOCK;y++){
+      	if(ind_block.pointers[y]<=0) continue;
+      	free_bitmap[ind_block.pointers[y]] = 0;
+				ind_block.pointers[y] = 0;
+    	}
+			disk_write(block.inode[i_offset].indirect, ind_block.data);
+			free_bitmap[block.inode[i_offset].indirect] = 0;
+      block.inode[i_offset].indirect = 0;
+  	}
+		disk_write(block_num, block.data);
+	}
+	
 
   //go through each direct pointer in the inode
   for(i=pointer_offset; i<POINTERS_PER_INODE; i++){
-		//printf("\n\n\n%s\n\n\n", data);
-		//printf("%d\n",inode.direct[i]);
-    dblock = inode.direct[i];
-		//to_write = ((bytes_left-bytes_written) < 4096) ? bytes_left-bytes_written : 4096;
-    disk_write(dblock, total_data);
+		new_block = newBlock(super_block.super.nblocks);
+		//if the disk is full, there are no more blocks left
+		if(!new_block){
+			printf("Error: There are not enough free blocks.\n");
+			block.inode[i_offset].size = offset+bytes_written;
+			disk_write(block_num, block.data);
+			return bytes_written;
+		}
+		block.inode[i_offset].direct[i] = new_block;
+    disk_write(block.inode[i_offset].direct[i], total_data);
     bytes_written += ((bytes_left-bytes_written) < 4096) ? bytes_left-bytes_written : 4096;
 		strcpy(total_data, &data[bytes_written]);
     if(bytes_written >= bytes_left){ 
 			block.inode[i_offset].size = offset+bytes_written;
-			printf("\n\n%d\n\n", block.inode[i_offset].size);
  			disk_write(block_num, block.data);
 			return bytes_written;
 		}
   }
-
-  disk_read(inode.indirect, indirect_block.data);
-
+	
+	//check if you need to create an indirect block
+	if(!block.inode[i_offset].indirect){
+		block.inode[i_offset].indirect = newBlock(super_block.super.nblocks);
+		disk_write(block.inode[i_offset].indirect, indirect_block.data);
+	}
 
   //go through all the pointers in the indirect block
 	for(j=(pointer_offset<5) ? 0 : pointer_offset-5; j<POINTERS_PER_BLOCK; j++) {
-		//printf("\n\n\n%s\n\n\n", data);
-		//printf("%d\t%d\n", i_offset, block_num);
+		new_block = newBlock(super_block.super.nblocks);
+		//if the disk is full, there are no more blocks left
+    if(!new_block){
+			printf("Error: There are not enough free blocks.\n");
+			block.inode[i_offset].size = offset+bytes_written;
+			disk_write(block.inode[i_offset].indirect, indirect_block.data);
+      disk_write(block_num, block.data); 
+			return bytes_written;
+		}
+		indirect_block.pointers[j] = new_block;
     disk_write(indirect_block.pointers[j], total_data);
     bytes_written += ((bytes_left-bytes_written) < 4096) ? bytes_left-bytes_written : 4096;
 		strcpy(total_data, &data[bytes_written]);
     if(bytes_written >= bytes_left) {
 			block.inode[i_offset].size = offset+bytes_written;
-			printf("\n\n%d\n\n", block.inode[i_offset].size);
+			disk_write(block.inode[i_offset].indirect, indirect_block.data);
 			disk_write(block_num, block.data);
+			for(i=0;i<POINTERS_PER_BLOCK;i++){
+        if(indirect_block.pointers[i]<=0) continue;
+      }
 			return bytes_written;
 		}
   }
 
   return bytes_written;
 }
-
