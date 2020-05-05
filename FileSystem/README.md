@@ -13,5 +13,6 @@ Other Contributors: Isobel Murrer, Bridget Lumb, Nicole Warren
 Due to limitations on which files were allowed to be edited for this project, memory is allocated for the free block bitmap when the file system is mounted, but is not freed when the program completes.  Although this is commonly considered to be bad practice, our group intentionally made this decision in order to adhere to project restrictions.
 
 ## Additional Resources ##
-Project instructions and further information can be found [here](https://sakailogin.nd.edu/access/content/group/SP20-CSE-34341-02/projects/Project_6.html "Project 6: File Systems")
+Project instructions and further information can be found [here](https://sakailogin.nd.edu/access/content/group/SP20-CSE-34341-02/projects/Project_6.html "Project 6: File Systems").
+
 *At the time of push, the link above requires access to a Notre Dame account.  The project instructions and information may be provided upon request.* 
